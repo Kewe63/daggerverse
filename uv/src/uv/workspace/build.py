@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import posixpath
+import tomllib
 from typing import Annotated
 
 import dagger
@@ -243,6 +244,15 @@ class UvWorkspaceBuild:
             overlay = overlay.with_new_file(
                 posixpath.join(ctr_base, "src", src_name, "__init__.py").lstrip("/"),
                 "",
+            )
+        license_files = tomllib.loads(pkg.pyproject_contents).get("project", {}).get("license-files", [])
+        if license_files:
+            # Editable installs build metadata from the scaffold before sources are copied.
+            resolved = posixpath.normpath(posixpath.join(self.plan.workspace_path, pkg.path))
+            overlay = overlay.with_directory(
+                ctr_base.lstrip("/"),
+                self.plan.source_dir.directory(resolved),
+                include=license_files,
             )
         return overlay
 
