@@ -80,8 +80,10 @@ so the expensive work is cached across builds:
    transitively depends on.
 2. **Remote** (third-party) dependencies are installed first. They change rarely, so
    this layer caches well. This optionally may be followed by `uv cache prune --ci` if the cache has exceeded a configurable size.
-3. The needed **local** members are scaffolded as stubs (their `pyproject.toml` plus an
-   empty module) and installed with `uv sync`. `uv` installs workspace members as
+3. The needed **local** members are scaffolded as stubs (their `pyproject.toml`, files
+   matched by `project.license-files`, and an empty module) and installed with `uv sync`.
+   License patterns are relative to each member's `pyproject.toml` and support globs
+   such as `LICENSE*` and `licenses/**/*.txt`. `uv` installs workspace members as
    *editable* by default, so this only records path links — it depends on the packages'
    metadata, not their code, and stays cached when you only change source.
 4. The real source is copied in **last**, on top of the stubs. Because the editable

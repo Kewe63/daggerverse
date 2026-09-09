@@ -257,6 +257,8 @@ class TypesafeDaggerverse:
                 _run, "relocatable_venv_runs_in_fresh_container", self.uv_relocatable_venv_runs_in_fresh_container
             )
             tg.start_soon(_run, "no_editable_bakes_local_source", self.uv_no_editable_bakes_local_source)
+            tg.start_soon(_run, "license_files", self.uv_license_files)
+            tg.start_soon(_run, "license_file_patterns", self.uv_license_file_patterns)
             tg.start_soon(_run, "build_workspace", self.uv_workspace_build_workspace)
             tg.start_soon(_run, "build_full_workspace", self.uv_workspace_build_full_workspace)
             tg.start_soon(_run, "workspace_layer_cache", self.uv_workspace_layer_cache)
@@ -449,6 +451,84 @@ class TypesafeDaggerverse:
         )
         if "NO_EDITABLE_OK" not in out:
             raise AssertionError(f"expected non-editable venv to bake real local source, got: {out!r}")
+
+    @function
+    async def uv_license_files(self) -> None:
+        """Declared license globs are available for editable and non-editable builds."""
+        src = self.source.directory("uv/tests/_packages/workspace-flat")
+        files = {
+            "LICENSE.txt": "Main license\n",
+            "NOTICE": "Notice\n",
+            "README.md": "License in the readme\n",
+            "licenses/COPYING.md": "Third-party license\n",
+            "licenses/vendor/COPYING.txt": "Nested third-party license\n",
+        }
+        for package in ("my-app", "my-lib"):
+            pyproject = await src.file(f"{package}/pyproject.toml").contents()
+            pyproject = pyproject.replace(
+                "[project]\n",
+                '[project]\nlicense-files = ["LICEN[CS]E*", "NOTIC?", "licenses/**/COPYING.*", "README.md"]\n',
+            )
+            src = src.with_new_file(f"{package}/pyproject.toml", pyproject)
+            for path, contents in files.items():
+                src = src.with_new_file(f"{package}/{path}", contents)
+            src = src.with_new_file(f"{package}/licenses/unrelated.txt", "Must not be copied\n")
+        src = dag.directory().with_directory("nested", src)
+        script = (
+            "from pathlib import Path\n"
+            f"expected = {files!r}\n"
+            "for name in ('my-app', 'my-lib'):\n"
+            "    for path, contents in expected.items():\n"
+            "        assert Path(name, path).read_text() == contents\n"
+            "    assert not Path(name, 'licenses/unrelated.txt').exists()\n"
+        )
+        for no_editable in (False, True):
+            await (
+                dag.uv(source=src)
+                .workspace(path="nested")
+                .build(package=["my-app"], no_editable=no_editable)
+                .with_remote_dependencies(prune_cache=False)
+                .with_workspace_files()
+                .with_local_dependencies()
+                .with_exec(["uv", "run", "--no-sync", "python", "-c", script])
+                .sync()
+            )
+
+    @function
+    async def uv_license_file_patterns(self) -> None:
+        """License arrays filter package-relative files without replacing the scaffold."""
+        source = self.source.directory("uv/tests/_packages/standalone-app")
+        pyproject = await source.file("pyproject.toml").contents()
+        files = ["LICENSE.txt", "NOTICE", "licenses/COPYING.md", "licenses/vendor/COPYING.txt"]
+        for path in [*files, "nested/LICENSE.txt", "licenses/unrelated.txt"]:
+            source = source.with_new_file(path, path)
+        cases = [
+            (None, []),
+            ([], []),
+            (["LICENSE.txt", "NOTICE"], ["LICENSE.txt", "NOTICE"]),
+            (["LICEN[CS]E*", "NOTIC?", "licenses/**/COPYING.*"], files),
+        ]
+        for patterns, expected in cases:
+            metadata = pyproject
+            if patterns is not None:
+                metadata = metadata.replace("[project]\n", f"[project]\nlicense-files = {patterns!r}\n")
+            ctr = (
+                dag.uv(source=source.with_new_file("pyproject.toml", metadata))
+                .workspace()
+                .build(dagger_codegen=False)
+                .with_workspace_files()
+                .container()
+            )
+            scaffold = ctr.directory(await ctr.workdir())
+            actual = {path for path in await scaffold.glob("**/*") if not path.endswith("/")}
+            assert actual == {"pyproject.toml", "uv.lock", "README.md", "src/standalone_app/__init__.py", *expected}, (
+                patterns,
+                actual,
+            )
+            assert await scaffold.file("pyproject.toml").contents() == metadata
+            assert await scaffold.file("src/standalone_app/__init__.py").contents() == ""
+            for path in expected:
+                assert await scaffold.file(path).contents() == path
 
     @function
     async def repro_directory_symlink_roundtrip(self) -> str:
